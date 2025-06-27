@@ -7,15 +7,11 @@ using ImGuiNET;
 using SharpDX;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
 
 namespace BoosterOpener;
 public class BoosterOpener : BaseSettingsPlugin<BoosterOpenerSettings> {
-	private const string _coroutineName = "Open_Booster_Routine";
-	private Vector2 _clickWindowOffset;
-	private uint _coroutineIteration;
-	private Coroutine _coroutineWorker;
+	private SyncTask<bool> _boosterTask;
 	private List<ServerInventory.InventSlotItem> _boosterPacks;
 	private List<Vector2> _emptyInventorySlots;
 	private RectangleF _inventoryPanelRect;
@@ -32,9 +28,9 @@ public class BoosterOpener : BaseSettingsPlugin<BoosterOpenerSettings> {
 
 		_boosterPacks = [];
 		_emptyInventorySlots = [];
+		_boosterTask = null;
 
-		Input.RegisterKey(System.Windows.Forms.Keys.O);
-
+		Settings.BoosterKey.OnValueChanged += () => Input.RegisterKey(Settings.BoosterKey);
 		return true;
 	}
 
@@ -67,72 +63,90 @@ public class BoosterOpener : BaseSettingsPlugin<BoosterOpenerSettings> {
 				_inventoryPanelRect = new RectangleF();
 			}
 
-			if (Settings.ProfilerHotkey.PressedOnce()) {
-				if (Core.ParallelRunner.FindByName(_coroutineName) == null) {
-					Core.ParallelRunner.Run(new Coroutine(OpenBoosterRoutine, null, this, _coroutineName));
-				} else {
-					Coroutine routine = Core.ParallelRunner.FindByName(_coroutineName);
-					routine.Done();
+			if (Settings.BoosterKey.PressedOnce()) {
+				StartStopBoosterOpener();
+			}
+
+			if (_boosterTask != null) {
+				ParseItems();
+				if (ShouldRun()) {
+					TaskUtils.RunOrRestart(ref _boosterTask, OpenBoosterAsync);
+				}
+				else {
+					StopBoosterOpener();
 				}
 			}
 		});
 	}
 
-	private async void OpenBoosterRoutine() {
-		//DebugWindow.LogMsg("OBR: Running open booster");
-		Cursor cursor = GameController.Game.IngameState.IngameUi.Cursor;
-		//DebugWindow.LogMsg("OBR: Start loop");
-		ParseItems();
-		while (_boosterPacks.Count > 0 && _emptyInventorySlots.Count > 0) {
-			if (cursor.ChildCount > 0) {
-				//DebugWindow.LogMsg("OBR: Have Card");
-				Input.SetCursorPos(_emptyInventorySlots[0].ToVector2Num());
-				await Task.Delay(50);
-				Input.Click(System.Windows.Forms.MouseButtons.Left);
-				await Task.Delay(50);
-			} else {
-				//DebugWindow.LogMsg("OBR: Don't Have Card");
-				Input.SetCursorPos(_boosterPacks[0].GetClientRect().Center.ToVector2Num());
-				await Task.Delay(50);
-				Input.Click(System.Windows.Forms.MouseButtons.Right);
-				await Task.Delay(50);
-			}
-			//DebugWindow.LogMsg("OBR: Update list");
-			await Task.Delay(150);
-			ParseItems();
+	private void StartStopBoosterOpener() {
+		if (Settings.DebugSettings.DebugLog) DebugWindow.LogMsg("OBR: Starting/Stopping BoosterOpener");
+		if (_boosterTask == null && ShouldRun()) {
+			StartBoosterOpener();
+			return;
+		} else if (_boosterTask != null) {
+			StopBoosterOpener();
+			return;
+		}
+		if (Settings.DebugSettings.DebugLog) DebugWindow.LogMsg("OBR: Nothing to do");
+		return;
+	}
+
+	private void StartBoosterOpener() {
+		if (Settings.DebugSettings.DebugLog)
+			DebugWindow.LogMsg("OBR: Starting BoosterOpener Task");
+		_boosterTask = OpenBoosterAsync();
+	}
+
+	private void StopBoosterOpener() {
+		if (Settings.DebugSettings.DebugLog)
+			DebugWindow.LogMsg("OBR: Stopping BoosterOpener Task");
+		_boosterTask = null;
+	}
+
+	private bool ShouldRun() {
+		return (_boosterPacks.Count > 0 && _emptyInventorySlots.Count > 0) || GameController.Game.IngameState.IngameUi.Cursor.ChildCount > 0;
+	}
+
+	private async SyncTask<bool> OpenBoosterAsync() {
+		if (Settings.DebugSettings.DebugLog)
+			DebugWindow.LogMsg("OBR: Running open booster");
+		ExileCore.PoEMemory.MemoryObjects.Cursor cursor = GameController.Game.IngameState.IngameUi.Cursor;
+		if (!ShouldRun()) {
+			if (Settings.DebugSettings.DebugLog) DebugWindow.LogMsg("OBR: No Booster Packs or Empty Slots, returning false");
+			return false;
 		}
 		if (cursor.ChildCount > 0) {
-			//DebugWindow.LogMsg("OBR: Have Card");
+			if (Settings.DebugSettings.DebugLog)
+				DebugWindow.LogMsg("OBR: Have Card");
 			Input.SetCursorPos(_emptyInventorySlots[0].ToVector2Num());
 			await Task.Delay(50);
 			Input.Click(System.Windows.Forms.MouseButtons.Left);
 			await Task.Delay(50);
+		} else {
+			if (Settings.DebugSettings.DebugLog)
+				DebugWindow.LogMsg("OBR: Don't Have Card");
+			Input.SetCursorPos(_boosterPacks[0].GetClientRect().Center.ToVector2Num());
+			await Task.Delay(50);
+			Input.Click(System.Windows.Forms.MouseButtons.Right);
+			await Task.Delay(50);
 		}
 		DebugWindow.LogMsg("OBR: Done");
+		return true;
 	}
 
 	public override void Render() {
-		//Any Imgui or Graphics calls go here. This is called after Tick
-		if (GameController.Game.IngameState.IngameUi.InventoryPanel.IsVisible && !_inventoryPanelRect.IsEmpty && false) {
-			ImGui.SetNextWindowPos(new Vector2(_inventoryPanelRect.Left - 150, _inventoryPanelRect.Top).ToVector2Num());
-			ImGui.SetNextWindowSize(new Vector2(150, 100).ToVector2Num());
-			ImGui.Begin("BoosterOpenerWindow",
-				ImGuiWindowFlags.NoTitleBar |
-				ImGuiWindowFlags.NoScrollbar |
-				ImGuiWindowFlags.NoResize |
-				ImGuiWindowFlags.NoDocking |
-				ImGuiWindowFlags.NoMove |
-				ImGuiWindowFlags.NoInputs
-			);
-			ImGui.Text(Settings.ProfilerHotkey.Value.ToString());
-			ImGui.Text("dc " + _boosterPacks.Count);
-			ImGui.Text("es " + _emptyInventorySlots.Count);
-			ImGui.End();
-		}
-		if (false) {
+		if (Settings.DebugSettings.DebugWindow) {
 			ImGui.Begin("BoosterOpenerDebug");
 			ImGui.Text("Current Rect is: " + _inventoryPanelRect);
 			ImGui.Text("InventoryPanel is opened: " + GameController.Game.IngameState.IngameUi.InventoryPanel[InventoryIndex.PlayerInventory].IsVisible);
+			ImGui.Text("BoosterPacks: " + _boosterPacks.Count);
+			ImGui.Text("Empty Slots: " + _emptyInventorySlots.Count);
+			ImGui.Text("Task: " + _boosterTask?.ToString());
+			ImGui.Text("ShouldRun: " + ShouldRun());
+			if (ImGui.Button("Run BoosterOpener")) {
+				StartStopBoosterOpener();
+			}
 		}
 	}
 
@@ -140,37 +154,47 @@ public class BoosterOpener : BaseSettingsPlugin<BoosterOpenerSettings> {
 		DebugWindow.LogMsg("PI: Parsing Items");
 		ServerInventory inventory = GameController.Game.IngameState.ServerData.PlayerInventories[0].Inventory;
 		List<Tuple<int, int>> slotsToSkip = [];
-		_clickWindowOffset = GameController.Window.GetWindowRectangle().TopLeft;
 		_boosterPacks.Clear();
 		_emptyInventorySlots.Clear();
-		for (int x = 0 ; x < inventory.Columns; x++) {
+		for (int x = 0 ; x < inventory.Columns ; x++) {
 			for (int y = 0 ; y < inventory.Rows ; y++) {
-				//DebugWindow.LogMsg("PI: Looking at " + x + ", " + y);
+				if (Settings.DebugSettings.DebugLog)
+					DebugWindow.LogMsg("PI: Looking at " + x + ", " + y);
 				if (slotsToSkip.Contains(Tuple.Create(x, y))) {
-					//DebugWindow.LogMsg("PI: Skipping " + x + ", " + y + " slot");
+					if (Settings.DebugSettings.DebugLog)
+						DebugWindow.LogMsg("PI: Skipping " + x + ", " + y + " slot");
 					continue;
 				}
 				if (inventory[x, y] == null) {
-					//DebugWindow.LogMsg("PI: Empty Slot at: " + x + ", " + y);
+					if (Settings.DebugSettings.DebugLog)
+						DebugWindow.LogMsg("PI: Empty Slot at: " + x + ", " + y);
 					Vector2 center = GetEmptySlotCenterPosition(x, y);
-					//DebugWindow.LogMsg("PI: Center of empty slot is: " + center);
+					if (Settings.DebugSettings.DebugLog)
+						DebugWindow.LogMsg("PI: Center of empty slot is: " + center);
 					_emptyInventorySlots.Add(center);
 					continue;
 				}
 				if (inventory[x, y].Item.Path == "Metadata/Items/DivinationCards/DivinationCardDeck") {
-					//DebugWindow.LogMsg("PI: Found Stacked Deck at: " + x + ", " + y);
+					if (Settings.DebugSettings.DebugLog)
+						DebugWindow.LogMsg("PI: Found Stacked Deck at: " + x + ", " + y);
 					_boosterPacks.Add(inventory[x, y]);
 					continue;
 				}
-				//DebugWindow.LogMsg("PI: The Fuck is this at: " + x + ", " + y);
-				//DebugWindow.LogMsg(inventory[x, y].ToString());
-				//DebugWindow.LogMsg("PI: Checking size of this shit: " + inventory[x, y].SizeX + ", " + inventory[x, y].SizeY);
+				if (Settings.DebugSettings.DebugLog)
+					DebugWindow.LogMsg("PI: The Fuck is this at: " + x + ", " + y);
+				if (Settings.DebugSettings.DebugLog)
+					DebugWindow.LogMsg(inventory[x, y].ToString());
+				if (Settings.DebugSettings.DebugLog)
+					DebugWindow.LogMsg("PI: Checking size of this shit: " + inventory[x, y].SizeX + ", " + inventory[x, y].SizeY);
 				for (int sx = x ; sx < x + inventory[x, y].SizeX ; sx++) {
-					//DebugWindow.LogMsg("PI: SizeX is : " + sx);
+					if (Settings.DebugSettings.DebugLog)
+						DebugWindow.LogMsg("PI: SizeX is : " + sx);
 					for (int sy = y ; sy < y + inventory[x, y].SizeY ; sy++) {
-						//DebugWindow.LogMsg("PI: SizeY is : " + sy);
+						if (Settings.DebugSettings.DebugLog)
+							DebugWindow.LogMsg("PI: SizeY is : " + sy);
 						if (sx > x || sy > y) {
-							//DebugWindow.LogMsg("PI: Adding to skip list: " + sx + ", " + sy);
+							if (Settings.DebugSettings.DebugLog)
+								DebugWindow.LogMsg("PI: Adding to skip list: " + sx + ", " + sy);
 							slotsToSkip.Add(Tuple.Create(sx, sy));
 						}
 					}
@@ -182,6 +206,6 @@ public class BoosterOpener : BaseSettingsPlugin<BoosterOpenerSettings> {
 	private Vector2 GetEmptySlotCenterPosition(int x, int y) {
 		RectangleF clientRect = GameController.Game.IngameState.IngameUi.InventoryPanel[InventoryIndex.PlayerInventory].GetClientRect();
 		float cellsize = clientRect.Width / 12f;
-		return new RectangleF(clientRect.Left + cellsize * (float)x, clientRect.Top + cellsize * (float)y, (float)x+1 * cellsize, (float)y+1 * cellsize).Center;
+		return new RectangleF(clientRect.Left + cellsize * (float)x, clientRect.Top + cellsize * (float)y, (float)x + 1 * cellsize, (float)y + 1 * cellsize).Center;
 	}
 }
